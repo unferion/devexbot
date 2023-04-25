@@ -1,0 +1,9 @@
+aiogram==3.0.0b7
+python-dotenv==0.21.1
+requests
+sqlite3
+pathlib
+sys
+json
+ldap3
+logging
