@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     AD_USER: SecretStr
     AD_PASSWORD: SecretStr
     AD_SEARCH_TREE: SecretStr
+    JIRA: SecretStr
     
     # Вложенный класс с дополнительными указаниями для настроек
     class Config:

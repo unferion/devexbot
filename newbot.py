@@ -31,18 +31,45 @@ script_path = pathlib.Path(sys.argv[0]).parent
 conndb = sqlite3.connect(script_path / "bot.db")
 # создание курсора для работы с базой данных
 cursor = conndb.cursor()
-# домен - example.com
-# DNS имя сервера Active Directory
 AD_SERVER = config.AD_SERVER.get_secret_value()
-# Пользователь (логин) в Active Directory - нужно указать логин в AD 
-# в формате 'EXAMPLE\aduser' или 'aduser@example.com'
 AD_DOMEN= config.AD_DOMEN.get_secret_value()
 AD_USER = config.AD_USER.get_secret_value()
 AD_PASSWORD = config.AD_PASSWORD.get_secret_value()
 AD_SEARCH_TREE = config.AD_SEARCH_TREE.get_secret_value()
 server = Server(AD_SERVER)
-conn = Connection(server,user=f"{AD_USER}/{AD_DOMEN}",password=AD_PASSWORD)
+authad=f"{AD_DOMEN}\\{AD_USER}"
+conn = Connection(server,user=authad,password=AD_PASSWORD)
 conn.bind()
+
+#issuetypes
+#10201 запрос на обслуживание
+#10200 инцидент
+def newReq(message,issuetype,issuetextfield):
+    cursor.execute(f"SELECT * FROM users WHERE chatid={str(message.from_user.id)} AND adusr NOT NULL")
+    result=cursor.fetchall()
+    body=json.dumps({
+    "fields": {
+        "project": {
+            "key": "DEV"
+        },
+        "summary": "Заявка от бота",
+        "description": message.text,
+        "reporter": {
+            "name": result[0][4]
+        },
+        "issuetype": {
+            "id": issuetype
+        },
+        "customfield_10208": issuetextfield
+        }
+    },indent=4)
+    print(body)
+    headers= {'Content-type':'application/json;charset=UTF-8', 'Accept': '*/*'}
+    response = session.post(f'{jira}/rest/api/2/issue',data=body,headers=headers)
+    json_response = response.json()
+    return response
+
+#newReq(message.text,10201,"Не знаю что выбрать")
 
 def add_user(chat_id, tg_name, usrtype, phone, ad_usr, domain):
     cursor.execute("INSERT INTO users (chatid, tgname, usertype, phone, adusr, domain) VALUES (?, ?, ?, ?, ?, ?)", (chat_id, tg_name, usrtype, phone, ad_usr, domain))
@@ -78,15 +105,15 @@ async def start_handler(message: types.Message):
 # Создаем клавиатуру, содержащую только одну кнопку
 #keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True).add(request_contact_button)
 
-contactbtn = [[types.KeyboardButton(text='Отправить контакт',request_contact=True, resize_keyboard=True)]]
-contactkb=types.ReplyKeyboardMarkup(keyboard=contactbtn)
+contactbtn = [[types.KeyboardButton(text='Отправить контакт',request_contact=True)]]
+contactkb = types.ReplyKeyboardMarkup(keyboard=contactbtn, resize_keyboard=True)
 
 @dp.message(Command("start"))
 async def contact_request(message: types.Message):
     await message.answer("Нажмите на кнопку, чтобы отправить номер телефона:",reply_markup=contactkb
     )
 
-jira ='https://jira.peopleandpeople.io'
+jira = config.JIRA.get_secret_value()
 print(f"{jira} jira")
 session = requests.Session()
 session.auth = (AD_USER,AD_PASSWORD)
@@ -144,7 +171,8 @@ def make_row_keyboard(items: list[str]) -> ReplyKeyboardMarkup:
     row = [KeyboardButton(text=item) for item in items]
     return ReplyKeyboardMarkup(keyboard=[row], resize_keyboard=True)
 
-reqtypes = ["Запрос на обслуживание","Инцидент","Сброс пароля"]
+reqList=["Проблема с ПО","Проблема с ПК","Проблема с сетью","Запрос картриджа","Замена периферии","Смена пароля","Не знаю что выбрать"]
+reqtypes = ["1","2","3","4","5","6","7"]
 
 class NewRequest(StatesGroup):
     choosing_request_type = State()
@@ -162,7 +190,7 @@ def make_row_keyboard(items: list[str]) -> ReplyKeyboardMarkup:
 @dp.message(Command("request"))
 async def cmd_request(message: Message, state: FSMContext):
     await message.answer(
-        text=f"К инцидентам относится то\nК запросам на обслуживание сё\nСброс пароля сбрасывает пароль\n\nВыберите тип заявки:",
+        text=f"Выберите тип заявки:\n\n1. Проблема с ПО\n2. Проблема с ПК\n3. Проблема с сетью\n4. Запрос картриджа\n5. Замена периферии\n6. Смена пароля\n7. Не знаю что выбрать\n\n/cancel - отмена текущего действия",
         reply_markup=make_row_keyboard(reqtypes)
     )
     # Устанавливаем пользователю состояние "выбирает название"
@@ -170,9 +198,9 @@ async def cmd_request(message: Message, state: FSMContext):
 
 @router.message(NewRequest.choosing_request_type, F.text.in_(reqtypes))
 async def request_chosen(message: Message, state: FSMContext):
-    await state.update_data(req_text=message.text)
+    await state.update_data(reqNum=message.text)
     await message.answer(
-        text="Теперь, пожалуйста, введите текст запроса:",
+        text="Пожалуйста, опишите проблему\n\n/cancel - отмена текущего действия",
         reply_markup=make_row_keyboard(reqtypes)
     )
     await state.set_state(NewRequest.entering_text)
@@ -180,39 +208,37 @@ async def request_chosen(message: Message, state: FSMContext):
 @router.message(NewRequest.choosing_request_type)
 async def norequsttype(message: Message):
     await message.answer(
-        text="Тип заявки указан неверно.\n\n"
-             "Пожалуйста, выберите одно из списка ниже:",
+        text="Нет такого варианта ответа.\nПожалуйста, выберите одно из списка ниже:\n\n1. Проблема с ПО\n2. Проблема с ПК\n3. Проблема с сетью\n4. Запрос картриджа\n5. Замена периферии\n6. Смена пароля\n7. Не знаю что выбрать\n\n/cancel - отмена текущего действия",
         reply_markup=make_row_keyboard(reqtypes)
     )
 
 @router.message(NewRequest.entering_text, F.text)
 async def text_entered(message: Message, state: FSMContext):
     user_data = await state.get_data()
-    cursor.execute(f"SELECT * FROM users WHERE chatid="+str(message.from_user.id)+" AND adusr NOT NULL")
-    result=cursor.fetchall()
-    body=json.dumps({
-    "fields": {
-        "project": {
-            "key": "DEV"
-        },
-        "summary": "Заявка от бота",
-        "description": message.text,
-        "reporter": {
-            "name": result[0][4]
-        },
-        "issuetype": {
-            "id": "10201"
-        },
-        "customfield_10208": "Не знаю что выбрать"
-        }
-    },indent=4)
-    print(body)
-    headers= {'Content-type':'application/json;charset=UTF-8', 'Accept': '*/*'}
-    response = session.post(f'{jira}/rest/api/2/issue',data=body,headers=headers)
-    json_response = response.json()
-    print(response.status_code)
-    await message.answer(
-        text=f"Создана заявка типа {user_data['req_text']}. Текст заявки {message.text}.\nНомер заявки {json_response['key']}",
+    if int(user_data['reqNum'])==1:
+        reqJson=newReq(message,10200,"Устранение известных проблем программ из списка стандартного набора ПО.")
+    elif int(user_data['reqNum'])==2:
+        reqJson=newReq(message,10200,"Устранение неисправностей ОС (без переустановки ОС), например, решение вопросов торможения ПК, неудачный вход в систему, освобождение свободного места на локальных дисках.")
+    elif int(user_data['reqNum'])==3:
+        reqJson=newReq(message,10200,"Устранение проблем доступа к сети интернет и/или локальной сети с одного компьютера")
+    elif int(user_data['reqNum'])==4:
+        reqJson=newReq(message,10201,'Замена картриджей в принтерах/мфу.')
+    elif int(user_data['reqNum'])==5:
+        reqJson=newReq(message,10201,"Замена периферии (мыши, клавиатуры, наушники).")
+    elif int(user_data['reqNum'])==6:
+        reqJson=newReq(message,10201,"Изменение пароля для входа в УЗ Windows.")
+    elif int(user_data['reqNum'])==7:
+        reqJson=newReq(message,10201,"Не знаю что выбрать")
+    reqResponse=reqJson.json()
+    if reqJson.status_code==201: await message.answer(
+        text=f"Создана заявка типа \"{reqList[int(user_data['reqNum'])-1]}\".\nТекст заявки {message.text}.\nНомер заявки {reqResponse['key']}",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+    else: 
+        print(reqJson)
+        print(reqJson.status_code)
+        await message.answer(
+        text=f"Заявка не была создана.\nКод ошибки \"{reqJson.status_code}\"",
         reply_markup=types.ReplyKeyboardRemove()
     )
     await state.clear()
