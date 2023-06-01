@@ -18,6 +18,7 @@ import sys
 import json
 from ldap3 import Server, Connection, SIMPLE, SYNC, ASYNC, SUBTREE, ALL
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.handlers import CallbackQueryHandler
 
 async def main():
     # Объект бота
@@ -31,6 +32,8 @@ script_path = pathlib.Path(sys.argv[0]).parent
 conndb = sqlite3.connect(script_path / "bot.db")
 # создание курсора для работы с базой данных
 cursor = conndb.cursor()
+
+#подключение к AD
 AD_SERVER = config.AD_SERVER.get_secret_value()
 AD_DOMEN= config.AD_DOMEN.get_secret_value()
 AD_USER = config.AD_USER.get_secret_value()
@@ -40,6 +43,19 @@ server = Server(AD_SERVER)
 authad=f"{AD_DOMEN}\\{AD_USER}"
 conn = Connection(server,user=authad,password=AD_PASSWORD)
 conn.bind()
+
+#подключение к JIRA
+jira = config.JIRA.get_secret_value()
+print(f"{jira} jira")
+session = requests.Session()
+session.auth = (AD_USER,AD_PASSWORD)
+auth = session.post(jira)
+print (auth.status_code)
+
+logging.basicConfig(level=logging.INFO)
+builder = InlineKeyboardBuilder()
+router = Router()
+dp.include_routers(router)
 
 #issuetypes
 #10201 запрос на обслуживание
@@ -69,6 +85,24 @@ def newReq(message,issuetype,issuetextfield):
     json_response = response.json()
     return response
 
+@dp.callback_query()
+async def mycallback(callback: types.CallbackQuery):
+    await callback.message.answer('sdasdasd')
+
+def checkReq(idReq,session):
+    headers= {'Content-type':'application/json;charset=UTF-8', 'Accept': '*/*'}
+    response = session.get(f'{jira}/rest/servicedeskapi/request/{idReq}?expand=issueType',headers=headers)
+    print(response)
+    return response
+
+
+reqResponse = checkReq("DEV-28439",session).json()
+print(type(reqResponse))
+print(reqResponse['issueKey'])
+print(reqResponse['requestFieldValues'][0]['value'])
+print(reqResponse['requestFieldValues'][1]['value'])
+print(reqResponse['currentStatus']['status'])
+#print(reqResponse.issueKey)
 #newReq(message.text,10201,"Не знаю что выбрать")
 
 def add_user(chat_id, tg_name, usrtype, phone, ad_usr, domain):
@@ -76,10 +110,6 @@ def add_user(chat_id, tg_name, usrtype, phone, ad_usr, domain):
     conndb.commit()
 
 # Включаем логирование, чтобы не пропустить важные сообщения
-logging.basicConfig(level=logging.INFO)
-builder = InlineKeyboardBuilder()
-router = Router()
-dp.include_routers(router)
 
 '''@dp.message(Command("start"))
 async def start_handler(message: types.Message):
@@ -112,13 +142,6 @@ contactkb = types.ReplyKeyboardMarkup(keyboard=contactbtn, resize_keyboard=True)
 async def contact_request(message: types.Message):
     await message.answer("Нажмите на кнопку, чтобы отправить номер телефона:",reply_markup=contactkb
     )
-
-jira = config.JIRA.get_secret_value()
-print(f"{jira} jira")
-session = requests.Session()
-session.auth = (AD_USER,AD_PASSWORD)
-auth = session.post(jira)
-print (auth.status_code)
 
 #print(json_response.keys())
 #for key in json_response:
@@ -157,22 +180,65 @@ async def get_queue(message: types.Message):
             reqbld = InlineKeyboardBuilder()
             for key in json_response['issues']:
                 print(key["key"])
-                reqbld.button(text=key["key"], url=f"{jira}/servicedesk/customer/portal/1/{key['key']}")
+                reqbld.button(text=key["key"],callback_data="www")
+                #url=f"{jira}/servicedesk/customer/portal/1/{key['key']}" ,
             await message.reply("Ваши заявки:", reply_markup=reqbld.as_markup())
         else: await message.reply("Очередь заявок пуста")
     else: await message.reply("номер не синхронизирован с AD")
 
-def make_row_keyboard(items: list[str]) -> ReplyKeyboardMarkup:
-    """
-    Создаёт реплай-клавиатуру с кнопками в один ряд
-    :param items: список текстов для кнопок
-    :return: объект реплай-клавиатуры
-    """
-    row = [KeyboardButton(text=item) for item in items]
-    return ReplyKeyboardMarkup(keyboard=[row], resize_keyboard=True)
-
 reqList=["Проблема с ПО","Проблема с ПК","Проблема с сетью","Запрос картриджа","Замена периферии","Смена пароля","Не знаю что выбрать"]
 reqtypes = ["1","2","3","4","5","6","7"]
+incidentReq={
+    "reqKey":10200,
+    "req":[
+        "Проблема с ПО",
+        "Проблема с ПК",
+        "Проблема с сетью"
+        ],
+    "jiraKey":[
+        "Устранение известных проблем программ из списка стандартного набора ПО.",
+        "Устранение неисправностей ОС (без переустановки ОС), например, решение вопросов торможения ПК, неудачный вход в систему, освобождение свободного места на локальных дисках.",
+        "Устранение проблем доступа к сети интернет и/или локальной сети с одного компьютера"
+        ]
+}
+serviceReq={
+    "reqKey":10201,
+    "req":[
+        "Запрос картриджа",
+        "Замена периферии",
+        "Смена пароля",
+        "Не знаю что выбрать"
+        ],
+    "jiraKey":[
+        "Замена картриджей в принтерах/мфу.",
+        "Замена периферии (мыши, клавиатуры, наушники).",
+        "Изменение пароля для входа в УЗ Windows.",
+        "Не знаю что выбрать"
+        ]
+}
+
+"""
+count=0
+i=0
+while True:
+    try:
+        #print(f"{str(count+1)}. {incidentReq['req'][i]}")
+        reqtypes.append(str(count+1))
+    except IndexError:
+        break
+    count+=1
+    i+=1
+i=0
+while True:
+    try:
+        #print(f"{str(count+1)}. {serviceReq['req'][i]}")
+        reqtypes.append(str(count+1))
+    except IndexError:
+        break
+    count+=1
+    i+=1
+"""
+print (len(serviceReq['req']))
 
 class NewRequest(StatesGroup):
     choosing_request_type = State()
@@ -215,6 +281,9 @@ async def norequsttype(message: Message):
 @router.message(NewRequest.entering_text, F.text)
 async def text_entered(message: Message, state: FSMContext):
     user_data = await state.get_data()
+    """
+    
+    """
     if int(user_data['reqNum'])==1:
         reqJson=newReq(message,10200,"Устранение известных проблем программ из списка стандартного набора ПО.")
     elif int(user_data['reqNum'])==2:
@@ -246,7 +315,7 @@ async def text_entered(message: Message, state: FSMContext):
 @dp.message(F.contact)
 async def handle_contact(message: types.Message):
         if message.contact.user_id != message.from_user.id:
-            await bot.delete_message(message.chat.id,message.message_id)
+            #await bot.delete_message(message.chat.id,message.message_id)
             await message.reply("Нельзя отправлять чужой контакт!")
         else:
             print(f"Received contact: {message.contact.first_name} {message.contact.last_name} {message.contact.phone_number}")
@@ -264,16 +333,6 @@ async def handle_contact(message: types.Message):
                     await message.reply("номер не найден")
             else: 
                 await message.reply("номер уже синхронизирован",reply_markup=types.ReplyKeyboardRemove())
-
-"""
-    if message.contact.user_id != telegram_id:
-        await message.answer("Нельзя отправлять контакты других пользователей!")
-        print(f"Received contact: {message.contact.first_name} {message.contact.last_name}")
-        return
-"""
-
-#def close_db():
-#conndb.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
